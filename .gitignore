@@ -1,4 +1,4 @@
 .env
-docs
+docs/
 db/
 __pycache__
