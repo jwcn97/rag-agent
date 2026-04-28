@@ -1,6 +1,7 @@
 import os
 import shutil
 from pathlib import Path
+import chromadb
 from dotenv import load_dotenv
 import streamlit as st
 from langchain_chroma import Chroma
@@ -21,14 +22,6 @@ def get_persist_directory() -> str:
     return os.getenv("PERSIST_DIRECTORY", "./db/index").strip()
 
 
-def ensure_persist_directory_writable() -> None:
-    persist_path = Path(get_persist_directory())
-    persist_path.mkdir(parents=True, exist_ok=True)
-    probe_file = persist_path / ".write_test"
-    probe_file.write_text("ok", encoding="utf-8")
-    probe_file.unlink(missing_ok=True)
-
-
 @st.cache_resource
 def get_embeddings():
     return OpenAIEmbeddings(model=os.getenv("EMBEDDING_MODEL"))
@@ -36,7 +29,6 @@ def get_embeddings():
 
 @st.cache_resource
 def get_vector_store():
-    ensure_persist_directory_writable()
     return Chroma(
         collection_name=get_collection_name(),
         embedding_function=get_embeddings(),
@@ -98,11 +90,18 @@ def ingest_uploaded_pdfs(uploaded_files) -> tuple[int, list[str]]:
     return len(all_chunks), errors
 
 
-def delete_whole_db():
-    persist_directory = get_persist_directory()
-    if persist_directory and os.path.exists(persist_directory):
-        shutil.rmtree(persist_directory)
-    Path(persist_directory).mkdir(parents=True, exist_ok=True)
+def clear_current_collection() -> int:
+    """
+    Delete all documents in the active collection without removing the DB files.
+    Returns the number of deleted chunks.
+    """
+    store = get_vector_store()
+    # Read existing ids first so we can report how many chunks were removed.
+    existing = store._collection.get(include=[])
+    ids = existing.get("ids", [])
+    if ids:
+        store._collection.delete(ids=ids)
+    return len(ids)
 
 
 st.set_page_config(page_title="FAQ Chat", page_icon="💬")
@@ -114,37 +113,34 @@ st.caption(
 with st.sidebar:
     st.header("Data Management")
 
-    uploaded_files = st.file_uploader(
-        "Load files (drag and drop PDFs)",
-        type=["pdf"],
-        accept_multiple_files=True,
-    )
-    if st.button("Load files", use_container_width=True):
+    with st.form("load_files_form", clear_on_submit=True):
+        uploaded_files = st.file_uploader(
+            "Load files (drag and drop PDFs)",
+            type=["pdf"],
+            accept_multiple_files=True,
+        )
+        load_files_clicked = st.form_submit_button("Load files", use_container_width=True)
+
+    if load_files_clicked:
         if not uploaded_files:
             st.warning("Please upload at least one PDF file first.")
         else:
             with st.spinner("Indexing documents into Chroma..."):
                 chunk_count, errors = ingest_uploaded_pdfs(uploaded_files)
             st.cache_resource.clear()
-            st.success(f"Loaded {len(uploaded_files)} files ({chunk_count} chunks).")
+            st.toast(f"Loaded {len(uploaded_files)} files ({chunk_count} chunks).", icon="✅")
             if errors:
                 st.error("Some files failed to load:")
                 for err in errors:
                     st.write(f"- {err}")
-            st.rerun()
 
     st.divider()
-    st.subheader("Delete whole DB")
-    confirm_delete = st.text_input("Type DELETE to confirm", placeholder="DELETE")
+    st.subheader("Collection Management")
 
-    if st.button("Delete whole DB", type="primary", use_container_width=True):
-        if confirm_delete != "DELETE":
-            st.error("Confirmation text mismatch. Type DELETE to proceed.")
-        else:
-            delete_whole_db()
-            st.cache_resource.clear()
-            st.success("Database deleted.")
-            st.rerun()
+    if st.button("Delete all chunks (keep DB)", use_container_width=True):
+        deleted_count = clear_current_collection()
+        st.cache_resource.clear()
+        st.toast(f"Deleted {deleted_count} chunks from `{get_collection_name()}`.", icon="✅")
 
 query = st.text_input("Ask a question about your indexed documents:")
 
