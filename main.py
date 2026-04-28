@@ -1,7 +1,6 @@
 import os
 import shutil
 from pathlib import Path
-import chromadb
 from dotenv import load_dotenv
 import streamlit as st
 from langchain_chroma import Chroma
